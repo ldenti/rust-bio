@@ -12,17 +12,18 @@
 //!
 //! ```
 //! use bio::alphabets::dna;
-//! use bio::data_structures::bwt::{bwt, less, Occ};
+//! use bio::data_structures::bwt::{bwt, less};
 //! use bio::data_structures::fmindex::{FMIndex, FMIndexable};
 //! use bio::data_structures::suffix_array::suffix_array;
+//! use bio::data_structures::wavelet_matrix::wavelet_matrix;
 //!
 //! let text = b"GCCTTAACATTATTACGCCTA$";
 //! let alphabet = dna::n_alphabet();
 //! let sa = suffix_array(text);
 //! let bwt = bwt(text, &sa);
 //! let less = less(&bwt, &alphabet);
-//! let occ = Occ::new(&bwt, 3, &alphabet);
-//! let fm = FMIndex::new(&bwt, &less, &occ);
+//! let wm = wavelet_matrix(&bwt);
+//! let fm = FMIndex::new(&bwt, &less, &wm);
 //! ```
 //!
 //! ## Enclose in struct
@@ -32,13 +33,15 @@
 //!
 //! ```
 //! use bio::alphabets::dna;
-//! use bio::data_structures::bwt::{bwt, less, Less, Occ, BWT};
+//! use bio::data_structures::bwt::{bwt, less, Less, BWT};
 //! use bio::data_structures::fmindex::{FMIndex, FMIndexable};
 //! use bio::data_structures::suffix_array::suffix_array;
+//! use bio::data_structures::wavelet_matrix::WaveletMatrix;
+//! use bio::data_structures::wavelet_matrix::wavelet_matrix;
 //! use bio::utils::TextSlice;
 //!
 //! pub struct Example {
-//!     fmindex: FMIndex<BWT, Less, Occ>,
+//!     fmindex: FMIndex<BWT, Less, WaveletMatrix>,
 //! }
 //!
 //! impl Example {
@@ -47,8 +50,8 @@
 //!         let sa = suffix_array(text);
 //!         let bwt = bwt(text, &sa);
 //!         let less = less(&bwt, &alphabet);
-//!         let occ = Occ::new(&bwt, 3, &alphabet);
-//!         let fm = FMIndex::new(bwt, less, occ);
+//!         let wm = wavelet_matrix(&bwt);
+//!         let fm = FMIndex::new(bwt, less, wm);
 //!         Example { fmindex: fm }
 //!     }
 //! }
@@ -58,8 +61,9 @@ use std::borrow::Borrow;
 use std::iter::DoubleEndedIterator;
 
 use crate::alphabets::dna;
-use crate::data_structures::bwt::{Less, Occ, BWT};
+use crate::data_structures::bwt::{Less, BWT};
 use crate::data_structures::suffix_array::SuffixArray;
+use crate::data_structures::wavelet_matrix::WaveletMatrix;
 use std::mem::swap;
 
 /// A suffix array interval.
@@ -96,17 +100,18 @@ pub trait FMIndexable {
     ///
     /// ```
     /// use bio::alphabets::dna;
-    /// use bio::data_structures::bwt::{bwt, less, Occ};
+    /// use bio::data_structures::bwt::{bwt, less};
     /// use bio::data_structures::fmindex::{FMIndex, FMIndexable};
     /// use bio::data_structures::suffix_array::suffix_array;
+    /// use bio::data_structures::wavelet_matrix::wavelet_matrix;
     ///
     /// let text = b"GCCTTAACATTATTACGCCTA$";
     /// let alphabet = dna::n_alphabet();
     /// let sa = suffix_array(text);
     /// let bwt = bwt(text, &sa);
     /// let less = less(&bwt, &alphabet);
-    /// let occ = Occ::new(&bwt, 3, &alphabet);
-    /// let fm = FMIndex::new(&bwt, &less, &occ);
+    /// let wm = wavelet_matrix(&bwt);
+    /// let fm = FMIndex::new(&bwt, &less, &wm);
     ///
     /// let pattern = b"TTA";
     /// let sai = fm.backward_search(pattern.iter());
@@ -142,17 +147,17 @@ pub trait FMIndexable {
 /// The Fast Index in Minute space (FM-Index, Ferragina and Manzini, 2000) for finding suffix array
 /// intervals matching a given pattern.
 #[derive(Serialize, Deserialize)]
-pub struct FMIndex<DBWT: Borrow<BWT>, DLess: Borrow<Less>, DOcc: Borrow<Occ>> {
+pub struct FMIndex<DBWT: Borrow<BWT>, DLess: Borrow<Less>, DWaveletMatrix: Borrow<WaveletMatrix>> {
     bwt: DBWT,
     less: DLess,
-    occ: DOcc,
+    wm: DWaveletMatrix,
 }
 
-impl<DBWT: Borrow<BWT>, DLess: Borrow<Less>, DOcc: Borrow<Occ>> FMIndexable
-    for FMIndex<DBWT, DLess, DOcc>
+impl<DBWT: Borrow<BWT>, DLess: Borrow<Less>, DWaveletMatrix: Borrow<WaveletMatrix>> FMIndexable
+    for FMIndex<DBWT, DLess, DWaveletMatrix>
 {
     fn occ(&self, r: usize, a: u8) -> usize {
-        self.occ.borrow().get(self.bwt.borrow(), r, a)
+        self.wm.borrow().rank(a, r as u64) as usize
     }
     fn less(&self, a: u8) -> usize {
         self.less.borrow()[a as usize]
@@ -163,16 +168,17 @@ impl<DBWT: Borrow<BWT>, DLess: Borrow<Less>, DOcc: Borrow<Occ>> FMIndexable
     }
 }
 
-impl<DBWT: Borrow<BWT>, DLess: Borrow<Less>, DOcc: Borrow<Occ>> FMIndex<DBWT, DLess, DOcc> {
+impl<DBWT: Borrow<BWT>, DLess: Borrow<Less>, DWaveletMatrix: Borrow<WaveletMatrix>> FMIndex<DBWT, DLess, DWaveletMatrix>
+{
     /// Construct a new instance of the FM index.
     ///
     /// # Arguments
     ///
     /// * `bwt` - the BWT
     /// * `less` - the less array of the BWT
-    /// * `occ` - the occurence array of the BWT
-    pub fn new(bwt: DBWT, less: DLess, occ: DOcc) -> Self {
-        FMIndex { bwt, less, occ }
+    /// * `wm - the wavelet matrix of the BWT
+    pub fn new(bwt: DBWT, less: DLess, wm: DWaveletMatrix) -> Self {
+        FMIndex { bwt, less, wm }
     }
 }
 
@@ -212,12 +218,12 @@ impl BiInterval {
 /// The FMD-Index for linear time search of supermaximal exact matches on forward and reverse
 /// strand of DNA texts (Li, 2012).
 #[derive(Serialize, Deserialize)]
-pub struct FMDIndex<DBWT: Borrow<BWT>, DLess: Borrow<Less>, DOcc: Borrow<Occ>> {
-    fmindex: FMIndex<DBWT, DLess, DOcc>,
+pub struct FMDIndex<DBWT: Borrow<BWT>, DLess: Borrow<Less>, DWaveletMatrix: Borrow<WaveletMatrix>> {
+    fmindex: FMIndex<DBWT, DLess, DWaveletMatrix>,
 }
 
-impl<DBWT: Borrow<BWT>, DLess: Borrow<Less>, DOcc: Borrow<Occ>> FMIndexable
-    for FMDIndex<DBWT, DLess, DOcc>
+impl<DBWT: Borrow<BWT>, DLess: Borrow<Less>, DWaveletMatrix: Borrow<WaveletMatrix>> FMIndexable
+    for FMDIndex<DBWT, DLess, DWaveletMatrix>
 {
     fn occ(&self, r: usize, a: u8) -> usize {
         self.fmindex.occ(r, a)
@@ -233,8 +239,7 @@ impl<DBWT: Borrow<BWT>, DLess: Borrow<Less>, DOcc: Borrow<Occ>> FMIndexable
     }
 }
 
-impl<DBWT: Borrow<BWT>, DLess: Borrow<Less>, DOcc: Borrow<Occ>> From<FMIndex<DBWT, DLess, DOcc>>
-    for FMDIndex<DBWT, DLess, DOcc>
+impl<DBWT: Borrow<BWT>, DLess: Borrow<Less>, DWaveletMatrix: Borrow<WaveletMatrix>> From<FMIndex<DBWT, DLess, DWaveletMatrix>> for FMDIndex<DBWT, DLess, DWaveletMatrix>
 {
     /// Construct a new instance of the FMD index (see Heng Li (2012) Bioinformatics).
     /// This expects a BWT that was created from a text over the DNA alphabet with N
@@ -243,7 +248,7 @@ impl<DBWT: Borrow<BWT>, DLess: Borrow<Less>, DOcc: Borrow<Occ>> From<FMIndex<DBW
     /// I.e., let T be the original text and R be its reverse complement.
     /// Then, the expected text is T$R$. Further, multiple concatenated texts are allowed, e.g.
     /// T1$R1$T2$R2$T3$R3$.
-    fn from(fmindex: FMIndex<DBWT, DLess, DOcc>) -> FMDIndex<DBWT, DLess, DOcc> {
+    fn from(fmindex: FMIndex<DBWT, DLess, DWaveletMatrix>) -> FMDIndex<DBWT, DLess, DWaveletMatrix> {
         let mut alphabet = dna::n_alphabet();
         alphabet.insert(b'$');
         assert!(
@@ -255,7 +260,8 @@ impl<DBWT: Borrow<BWT>, DLess: Borrow<Less>, DOcc: Borrow<Occ>> From<FMIndex<DBW
     }
 }
 
-impl<DBWT: Borrow<BWT>, DLess: Borrow<Less>, DOcc: Borrow<Occ>> FMDIndex<DBWT, DLess, DOcc> {
+impl<DBWT: Borrow<BWT>, DLess: Borrow<Less>, DWaveletMatrix: Borrow<WaveletMatrix>> FMDIndex<DBWT, DLess, DWaveletMatrix>
+{
     /// Find supermaximal exact matches of given pattern that overlap position i in the pattern.
     /// Complexity O(m) with pattern of length m.
     ///
@@ -263,17 +269,18 @@ impl<DBWT: Borrow<BWT>, DLess: Borrow<Less>, DOcc: Borrow<Occ>> FMDIndex<DBWT, D
     ///
     /// ```
     /// use bio::alphabets::dna;
-    /// use bio::data_structures::bwt::{bwt, less, Occ};
+    /// use bio::data_structures::bwt::{bwt, less};
     /// use bio::data_structures::fmindex::{FMDIndex, FMIndex};
     /// use bio::data_structures::suffix_array::suffix_array;
+    /// use bio::data_structures::wavelet_matrix::wavelet_matrix;
     ///
     /// let text = b"ATTC$GAAT$";
     /// let alphabet = dna::n_alphabet();
     /// let sa = suffix_array(text);
     /// let bwt = bwt(text, &sa);
     /// let less = less(&bwt, &alphabet);
-    /// let occ = Occ::new(&bwt, 3, &alphabet);
-    /// let fm = FMIndex::new(&bwt, &less, &occ);
+    /// let wm = wavelet_matrix(&bwt);
+    /// let fm = FMIndex::new(&bwt, &less, &wm);
     /// let fmdindex = FMDIndex::from(fm);
     ///
     /// let pattern = b"ATT";
@@ -417,8 +424,9 @@ impl<DBWT: Borrow<BWT>, DLess: Borrow<Less>, DOcc: Borrow<Occ>> FMDIndex<DBWT, D
 mod tests {
     use super::*;
     use crate::alphabets::dna;
-    use crate::data_structures::bwt::{bwt, less, Occ};
+    use crate::data_structures::bwt::{bwt, less};
     use crate::data_structures::suffix_array::suffix_array;
+    use crate::data_structures::wavelet_matrix::wavelet_matrix;
 
     #[test]
     fn test_fmindex() {
@@ -427,8 +435,8 @@ mod tests {
         let sa = suffix_array(text);
         let bwt = bwt(text, &sa);
         let less = less(&bwt, &alphabet);
-        let occ = Occ::new(&bwt, 3, &alphabet);
-        let fm = FMIndex::new(&bwt, &less, &occ);
+        let wm = wavelet_matrix(&bwt);
+        let fm = FMIndex::new(&bwt, &less, &wm);
 
         let pattern = b"TTA";
         let sai = fm.backward_search(pattern.iter());
@@ -445,8 +453,8 @@ mod tests {
         let sa = suffix_array(text);
         let bwt = bwt(text, &sa);
         let less = less(&bwt, &alphabet);
-        let occ = Occ::new(&bwt, 3, &alphabet);
-        let fm = FMIndex::new(&bwt, &less, &occ);
+        let wm = wavelet_matrix(&bwt);
+        let fm = FMIndex::new(&bwt, &less, &wm);
 
         let pattern = b"TTT";
         let sai = fm.backward_search(pattern.iter());
@@ -467,9 +475,9 @@ mod tests {
         let sa = suffix_array(&text);
         let bwt = bwt(&text, &sa);
         let less = less(&bwt, &alphabet);
-        let occ = Occ::new(&bwt, 3, &alphabet);
+        let wm = wavelet_matrix(&bwt);
 
-        let fmindex = FMIndex::new(&bwt, &less, &occ);
+        let fmindex = FMIndex::new(&bwt, &less, &wm);
         let fmdindex = FMDIndex::from(fmindex);
         {
             let pattern = b"AA";
@@ -496,9 +504,9 @@ mod tests {
         let sa = suffix_array(text);
         let bwt = bwt(text, &sa);
         let less = less(&bwt, &alphabet);
-        let occ = Occ::new(&bwt, 3, &alphabet);
+        let wm = wavelet_matrix(&bwt);
 
-        let fmindex = FMIndex::new(&bwt, &less, &occ);
+        let fmindex = FMIndex::new(&bwt, &less, &wm);
         let fmdindex = FMDIndex::from(fmindex);
         let pattern = b"T";
         let interval = fmdindex.init_interval_with(pattern[0]);
@@ -569,9 +577,9 @@ mod tests {
         let sa = suffix_array(reads);
         let bwt = bwt(reads, &sa);
         let less = less(&bwt, &alphabet);
-        let occ = Occ::new(&bwt, 3, &alphabet);
+        let wm = wavelet_matrix(&bwt);
 
-        let fmindex = FMIndex::new(&bwt, &less, &occ);
+        let fmindex = FMIndex::new(&bwt, &less, &wm);
         let fmdindex = FMDIndex::from(fmindex);
 
         let read = b"GGCGTGGTGGCTTATGCCTGTAATCCCAGCACTTTGGGAGGTCGAAGTGGGCGG";
