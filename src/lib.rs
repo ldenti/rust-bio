@@ -98,9 +98,10 @@
 //! ```rust
 //! // Import some modules
 //! use bio::alphabets;
-//! use bio::data_structures::bwt::{bwt, less, Occ};
+//! use bio::data_structures::bwt::{bwt, less};
 //! use bio::data_structures::fmindex::{FMIndex, FMIndexable};
 //! use bio::data_structures::suffix_array::suffix_array;
+//! use bio::data_structures::wavelet_matrix::wavelet_matrix;
 //! use bio::io::fastq;
 //! use bio::io::fastq::FastqRead;
 //! use std::io;
@@ -117,11 +118,11 @@
 //! let sa = suffix_array(text);
 //! // calculate the Burrows-Wheeler-transform
 //! let bwt = bwt(text, &sa);
-//! // calculate the vectors less and Occ (occurrences)
+//! // calculate the vectors less and the wavelet matrix (for counting occurrences)
 //! let less = less(&bwt, &alphabet);
-//! let occ = Occ::new(&bwt, 3, &alphabet);
+//! let wm = wavelet_matrix(&bwt);
 //! // set up FMIndex
-//! let fmindex = FMIndex::new(&bwt, &less, &occ);
+//! let fmindex = FMIndex::new(&bwt, &less, &wm);
 //! // do a backwards search for the pattern
 //! let interval = fmindex.backward_search(pattern.iter());
 //! let positions = interval.occ(&sa);
@@ -156,9 +157,10 @@
 //!
 //! ```rust
 //! use bio::alphabets;
-//! use bio::data_structures::bwt::{bwt, less, Occ};
+//! use bio::data_structures::bwt::{bwt, less};
 //! use bio::data_structures::fmindex::{FMIndex, FMIndexable};
 //! use bio::data_structures::suffix_array::suffix_array;
+//! use bio::data_structures::wavelet_matrix::wavelet_matrix;
 //! use std::sync::Arc;
 //! use std::thread;
 //!
@@ -170,8 +172,8 @@
 //! let sa = suffix_array(text);
 //! let bwt = Arc::new(bwt(text, &sa));
 //! let less = Arc::new(less(bwt.as_ref(), &alphabet));
-//! let occ = Arc::new(Occ::new(bwt.as_ref(), 3, &alphabet));
-//! let fmindex = Arc::new(FMIndex::new(bwt, less, occ));
+//! let wm = Arc::new(wavelet_matrix(bwt.as_ref()));
+//! let fmindex = Arc::new(FMIndex::new(bwt, less, wm));
 //!
 //! // Spawn threads to perform backward searches for each interval
 //! let interval_calculators = patterns
