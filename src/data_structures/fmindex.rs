@@ -262,7 +262,7 @@ impl<DBWT: Borrow<BWT>, DLess: Borrow<Less>, DWaveletMatrix: Borrow<WaveletMatri
 
 impl<DBWT: Borrow<BWT>, DLess: Borrow<Less>, DWaveletMatrix: Borrow<WaveletMatrix>> FMDIndex<DBWT, DLess, DWaveletMatrix>
 {
-    /// Find supermaximal exact matches of given pattern that overlap position i in the pattern.
+    /// Find supermaximal exact matches (of length >= l) of given pattern that overlap position i in the pattern.
     /// Complexity O(m) with pattern of length m.
     ///
     /// # Example
@@ -284,21 +284,28 @@ impl<DBWT: Borrow<BWT>, DLess: Borrow<Less>, DWaveletMatrix: Borrow<WaveletMatri
     /// let fmdindex = FMDIndex::from(fm);
     ///
     /// let pattern = b"ATT";
-    /// let intervals = fmdindex.smems(pattern, 2);
+    /// let intervals = fmdindex.smems(pattern, 2, 0);
     ///
-    /// let forward_positions = intervals[0].forward().occ(&sa);
-    ///
-    /// let revcomp_positions = intervals[0].revcomp().occ(&sa);
+    /// let forward_positions = intervals[0].0.forward().occ(&sa);
+    /// let revcomp_positions = intervals[0].0.revcomp().occ(&sa);
+    /// let pattern_position = intervals[0].1;
+    /// let smem_len = intervals[0].2;
     ///
     /// assert_eq!(forward_positions, [0]);
     /// assert_eq!(revcomp_positions, [6]);
+    /// assert_eq!(pattern_position, 0);
+    /// assert_eq!(smem_len, 3);
     /// ```
-    pub fn smems(&self, pattern: &[u8], i: usize) -> Vec<BiInterval> {
-        let curr = &mut Vec::new();
-        let prev = &mut Vec::new();
-        let mut matches = Vec::new();
+    pub fn smems(&self, pattern: &[u8], i: usize, l: usize) -> Vec<(BiInterval, usize, usize)> {
+        let curr = &mut Vec::new(); // pairs (biinterval, current match length)
+        let prev = &mut Vec::new(); // """
+        let mut matches = Vec::new(); // triples (biinterval, position on pattern, smem length)
 
+        let mut match_len = 0;
         let mut interval = self.init_interval_with(pattern[i]);
+        if interval.size != 0 {
+            match_len += 1;
+        }
 
         for &a in pattern[i + 1..].iter() {
             // forward extend interval
@@ -306,16 +313,17 @@ impl<DBWT: Borrow<BWT>, DLess: Borrow<Less>, DWaveletMatrix: Borrow<WaveletMatri
 
             // if size changed, add last interval to list
             if interval.size != forward_interval.size {
-                curr.push(interval);
+                curr.push((interval, match_len));
             }
             // if new interval size is zero, stop, as no further forward extension is possible
             if forward_interval.size == 0 {
                 break;
             }
             interval = forward_interval;
+            match_len += 1;
         }
         // add the last non-zero interval
-        curr.push(interval);
+        curr.push((interval, match_len));
         // reverse intervals such that longest comes first
         curr.reverse();
 
@@ -328,23 +336,24 @@ impl<DBWT: Borrow<BWT>, DLess: Borrow<Less>, DWaveletMatrix: Borrow<WaveletMatri
             // size of the last confirmed interval
             let mut last_size = -1;
 
-            for interval in prev.iter() {
+            for (interval, match_len) in prev.iter() {
                 // backward extend interval
                 let forward_interval = self.backward_ext(interval, a);
 
                 if (forward_interval.size == 0 || k == -1) &&
-                        // interval could not be extended further
-                        // if no interval has been extended this iteration,
-                        // interval is maximal and can be added to the matches
-                        curr.is_empty() && k < j
+                            // interval could not be extended further
+                            // if no interval has been extended this iteration,
+                            // interval is maximal and can be added to the matches
+                            curr.is_empty() && k < j &&
+                            match_len >= &l
                 {
                     j = k;
-                    matches.push(*interval);
+                    matches.push((*interval, (k + 1) as usize, *match_len));
                 }
                 // add _interval to curr (will be further extended next iteration)
                 if forward_interval.size != 0 && forward_interval.size as isize != last_size {
                     last_size = forward_interval.size as isize;
-                    curr.push(forward_interval);
+                    curr.push((forward_interval, match_len + 1));
                 }
             }
             if curr.is_empty() {
@@ -354,6 +363,59 @@ impl<DBWT: Borrow<BWT>, DLess: Borrow<Less>, DWaveletMatrix: Borrow<WaveletMatri
         }
 
         matches
+    }
+
+    /// Find all supermaximal exact matches (of length >= l) of given pattern.
+    /// Complexity O(m^2) with pattern of length m.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use bio::alphabets::dna;
+    /// use bio::data_structures::bwt::{bwt, less};
+    /// use bio::data_structures::fmindex::{FMDIndex, FMIndex};
+    /// use bio::data_structures::suffix_array::suffix_array;
+    /// use bio::data_structures::wavelet_matrix::wavelet_matrix;
+    ///
+    /// let text = b"ATTCGGGG$CCCCGAAT$";
+    /// let alphabet = dna::n_alphabet();
+    /// let sa = suffix_array(text);
+    /// let bwt = bwt(text, &sa);
+    /// let less = less(&bwt, &alphabet);
+    /// let wm = wavelet_matrix(&bwt);
+    /// let fm = FMIndex::new(&bwt, &less, &wm);
+    /// let fmdindex = FMDIndex::from(fm);
+    ///
+    /// let pattern = b"ATTGGGG";
+    /// let intervals = fmdindex.all_smems(pattern, 0);
+    /// assert_eq!(intervals.len(), 2);
+    ///
+    /// let solutions = vec![[0,14,0,3], [4,9,3,4]];
+    /// for (i, interval) in intervals.iter().enumerate() {
+    ///     let forward_positions = interval.0.forward().occ(&sa);
+    ///     let revcomp_positions = interval.0.revcomp().occ(&sa);
+    ///     let pattern_position = interval.1;
+    ///     let smem_len = interval.2;
+    ///     assert_eq!([forward_positions[0], revcomp_positions[0], pattern_position, smem_len], solutions[i]);
+    /// }
+    /// ```
+    pub fn all_smems(&self, pattern: &[u8], l: usize) -> Vec<(BiInterval, usize, usize)> {
+        let mut smems = Vec::new();
+        let mut i0 = 0;
+        while i0 < pattern.len() {
+            let mut curr_smems = self.smems(pattern, i0, l);
+            let mut next_i0 = i0 + 1; // this always works since:
+                                      // if we have a SMEM overlapping i0, it is at least 1bp long.
+                                      // If we don't have a smem, then we'll reiterate from i0+1
+            for (_, p, l) in curr_smems.iter() {
+                if p + l > next_i0 {
+                    next_i0 = p + l;
+                }
+            }
+            i0 = next_i0;
+            smems.append(&mut curr_smems);
+        }
+        smems
     }
 
     /// Initialize interval with given start character.
@@ -481,18 +543,63 @@ mod tests {
         let fmdindex = FMDIndex::from(fmindex);
         {
             let pattern = b"AA";
-            let intervals = fmdindex.smems(pattern, 0);
-            let forward = intervals[0].forward();
-            let revcomp = intervals[0].revcomp();
+            let intervals = fmdindex.smems(pattern, 0, 0);
+            let forward = intervals[0].0.forward();
+            let revcomp = intervals[0].0.revcomp();
+            let pattern_position = intervals[0].1;
+            let smem_len = intervals[0].2;
             assert_eq!(forward.occ(&sa), [5, 16]);
             assert_eq!(revcomp.occ(&sa), [3, 14]);
+            assert_eq!(pattern_position, 0);
+            assert_eq!(smem_len, 2);
         }
         {
             let pattern = b"CTTAA";
-            let intervals = fmdindex.smems(pattern, 1);
-            assert_eq!(intervals[0].forward().occ(&sa), [2]);
-            assert_eq!(intervals[0].revcomp().occ(&sa), [14]);
-            assert_eq!(intervals[0].match_size, 5)
+            let intervals = fmdindex.smems(pattern, 1, 0);
+            assert_eq!(intervals[0].0.forward().occ(&sa), [2]);
+            assert_eq!(intervals[0].0.revcomp().occ(&sa), [14]);
+            assert_eq!(intervals[0].1, 0);
+            assert_eq!(intervals[0].2, 5);
+            assert_eq!(intervals[0].0.match_size, 5);
+        }
+        {
+            let pattern = b"CTTAA";
+            let intervals = fmdindex.smems(pattern, 1, 7);
+            assert!(intervals.is_empty());
+        }
+    }
+
+    #[test]
+    fn test_all_smems() {
+        let text = b"ATTCGGGG$CCCCGAAT$";
+        let alphabet = dna::n_alphabet();
+        let sa = suffix_array(text);
+        let bwt = bwt(text, &sa);
+        let less = less(&bwt, &alphabet);
+        let wm = wavelet_matrix(&bwt);
+        let fm = FMIndex::new(&bwt, &less, &wm);
+        let fmdindex = FMDIndex::from(fm);
+
+        {
+            let pattern = b"ATTGGGG";
+            let intervals = fmdindex.all_smems(pattern, 0);
+            assert_eq!(intervals.len(), 2);
+            let solutions = vec![[0, 14, 0, 3], [4, 9, 3, 4]];
+            for (i, interval) in intervals.iter().enumerate() {
+                let forward_positions = interval.0.forward().occ(&sa);
+                let revcomp_positions = interval.0.revcomp().occ(&sa);
+                let pattern_position = interval.1;
+                let smem_len = interval.2;
+                assert_eq!(
+                    [
+                        forward_positions[0],
+                        revcomp_positions[0],
+                        pattern_position,
+                        smem_len
+                    ],
+                    solutions[i]
+                );
+            }
         }
     }
 
@@ -587,11 +694,11 @@ mod tests {
 
         for i in 0..read.len() {
             println!("i {}", i);
-            let intervals = fmdindex.smems(read, i);
+            let intervals = fmdindex.smems(read, i, 0);
             println!("{:?}", intervals);
             let matches = intervals
                 .iter()
-                .flat_map(|interval| interval.forward().occ(&sa))
+                .flat_map(|interval| interval.0.forward().occ(&sa))
                 .collect::<Vec<usize>>();
             assert_eq!(matches, vec![read_pos]);
         }
